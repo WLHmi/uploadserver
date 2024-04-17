@@ -18,6 +18,47 @@ COLOR_SCHEME = {
     'dark': 'dark',
 }
 
+def get_folder_create_page():
+    return bytes('''<!DOCTYPE html>
+<html>
+<head>
+<title>Create Folder</title>
+<meta name="viewport" content="width=device-width, user-scalable=no" />
+<meta name="color-scheme" content="auto">
+</head>
+<body>
+<h1>Create Folder</h1>
+<form action="createDir" method="POST">
+<input name="foldername" type="text" placeholder="Folder name" />
+<br />
+<br />
+<input type="submit" />
+</form>
+<p id="status"></p>
+</body>
+<script>
+document.getElementsByTagName('form')[0].addEventListener('submit', async e => {
+  e.preventDefault()
+
+  const foldername = e.target.foldername.value
+  const createRequest = new XMLHttpRequest()
+  createRequest.open(e.target.method, e.target.action)
+  createRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
+  createRequest.timeout = 10000
+
+    createRequest.onreadystatechange = () => {
+    if (createRequest.readyState === XMLHttpRequest.DONE) {
+        let message = `${createRequest.status}: ${createRequest.statusText}`
+        if (createRequest.status === 0) message = 'Connection failed'
+        if (createRequest.status === 204) {
+            message = `Success: ${createRequest.statusText}`
+        }
+        document.getElementById('status').textContent = message
+    }
+    }
+    </script>
+    </html>''', 'utf-8')
+
 def get_upload_page(theme):
     return bytes('''<!DOCTYPE html>
 <html>
@@ -82,10 +123,22 @@ def get_directory_head_injection(theme):
 ''', 'utf-8')
 
 DIRECTORY_BODY_INJECTION = b'''<!-- Injected by uploadserver -->
-<a href="upload">File upload</a> (provided by uploadserver)
+<a href="upload">File upload</a>
+<br />
+<a href="createDir">Create folder</a>
+<br />
+<a href="..">Parent directory</a>
+<br />
 <hr>
 <!-- End injection by uploadserver -->
 '''
+
+def send_directory_page(handler):
+    handler.send_response(http.HTTPStatus.OK)
+    handler.send_header('Content-Type', 'text/html; charset=utf-8')
+    handler.send_header('Content-Length', len(get_folder_create_page()))
+    handler.end_headers()
+    handler.wfile.write(get_folder_create_page())
 
 def send_upload_page(handler):
     handler.send_response(http.HTTPStatus.OK)
@@ -115,6 +168,43 @@ def auto_rename(path):
         if not os.path.exists(renamed_path):
             return renamed_path
     raise FileExistsError(f'File {path} already exists.')
+
+def create_directory(handler):
+    result = (http.HTTPStatus.INTERNAL_SERVER_ERROR, 'Server error')
+    if not handler.path:
+        return (http.HTTPStatus.BAD_REQUEST, 'No folder name provided')
+
+    # get post foldername from the request
+    form = PersistentFieldStorage(fp=handler.rfile, headers=handler.headers,
+        environ={'REQUEST_METHOD': 'POST'})
+    if 'foldername' not in form:
+        return (http.HTTPStatus.BAD_REQUEST, 'Field "foldername" not found')
+
+    foldername = form['foldername'].value
+    print(f'Creating folder: {foldername}')
+
+    # chekc foldername has only characters
+    if not foldername.isalnum():
+        return (http.HTTPStatus.BAD_REQUEST, 'Invalid folder name')
+
+    # create folder
+    request_path = handler.path.replace('/', '', 1).replace('/createDir', "")
+
+    try:
+        os.makedirs(os.path.join(args.directory if args.directory else "", request_path, foldername))
+        # redirect to created folder
+        handler.send_response(http.HTTPStatus.SEE_OTHER)
+        # go to referer / created folder
+        handler.send_header('Location ', f'{handler.path}/../{foldername}')
+        handler.end_headers()
+        return (http.HTTPStatus.NO_CONTENT, f'Folder "{foldername}" created')
+
+    except:
+        # check if error is the folder already eists
+        if os.path.exists(os.path.join(args.directory if args.directory else "", request_path, foldername)):
+            return (http.HTTPStatus.CONFLICT, f'Folder "{foldername}" already exists')
+        return (http.HTTPStatus.INTERNAL_SERVER_ERROR, 'Failed to create folder')
+
 
 def receive_upload(handler):
 
@@ -272,6 +362,8 @@ class SimpleHTTPRequestHandler(ListDirectoryInterception,
 
         if self.path.endswith('/upload'):
             send_upload_page(self)
+        elif self.path.endswith('/createDir'):
+            send_directory_page(self)
         else:
             super().do_GET()
 
@@ -280,6 +372,14 @@ class SimpleHTTPRequestHandler(ListDirectoryInterception,
 
         if self.path.endswith('/upload'):
             result = receive_upload(self)
+
+            if result[0] < http.HTTPStatus.BAD_REQUEST:
+                self.send_response(result[0], result[1])
+                self.end_headers()
+            else:
+                self.send_error(result[0], result[1])
+        elif self.path.endswith('/createDir'):
+            result = create_directory(self)
 
             if result[0] < http.HTTPStatus.BAD_REQUEST:
                 self.send_response(result[0], result[1])
@@ -301,6 +401,8 @@ class CGIHTTPRequestHandler(ListDirectoryInterception,
         # if self.path.endswith('/upload'):
         if self.path.endswith('/upload'):
             send_upload_page(self)
+        elif self.path.endswith('/createDir'):
+            send_directory_page(self)
         else:
             super().do_GET()
 
@@ -315,6 +417,11 @@ class CGIHTTPRequestHandler(ListDirectoryInterception,
                 self.end_headers()
             else:
                 self.send_error(result[0], result[1])
+        elif self.path.endswith('/createDir'):
+            result = create_directory(self)
+
+            self.send_response(http.HTTPStatus.OK, 'should be fine')
+            self.end_headers()
         else:
             super().do_POST()
 
@@ -447,3 +554,6 @@ def main():
     if not hasattr(args, 'directory'): args.directory = os.getcwd()
 
     serve_forever()
+
+if __name__ == "__main__":
+    main()
