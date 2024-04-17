@@ -188,7 +188,7 @@ def create_directory(handler):
         return (http.HTTPStatus.BAD_REQUEST, 'Invalid folder name')
 
     # create folder
-    request_path = handler.path.replace('/', '', 1).replace('/createDir', "")
+    request_path = handler.path.replace('/createDir', "").replace('/', '', 1)
 
     try:
         os.makedirs(os.path.join(args.directory if args.directory else "", request_path, foldername))
